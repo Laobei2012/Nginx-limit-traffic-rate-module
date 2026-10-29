@@ -28,6 +28,34 @@ syntax is same to limit_zone.
         }
     }
 
+If the core limit_rate directive, the $limit_rate variable or the
+X-Accel-Limit-Rate header sets a lower rate for a request, the lower rate
+is used.
+
+How the total rate is enforced:
+
+  * All bytes sent for a variable value are counted, including those of
+    requests that have already finished, so the limit also applies to
+    many short responses, whether they are sent in parallel or one after
+    another.
+  * The bandwidth is shared between the active requests. If more than
+    rate * seconds bytes have been sent, requests are slowed down until
+    the total is within the limit again.
+  * At most 1 second of unused bandwidth is saved up, so a burst after an
+    idle period is limited to about "rate" bytes (plus the data in flight).
+  * The rate is measured in whole seconds and enforced through the nginx
+    write filter, so the rate over a short interval can be higher; over
+    several seconds it stays close to the limit.
+  * After the last request for a value finishes, its state is kept while
+    it is still needed (the bytes sent are over the limit, or less than 1
+    second of bandwidth is unused). Such idle states are freed when they
+    are no longer needed, or, if the zone is full, oldest first. So a zone
+    that is too small makes the limit less accurate for idle clients.
+  * The first limit_rate_after bytes of each response are neither limited
+    nor counted.
+    So responses smaller than limit_rate_after are never counted toward
+    the total.
+
 Changelogs
   v0.2 
     *   modify algorithm, rate = (limit - last_rate)/conn + last_rate
