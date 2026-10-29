@@ -530,6 +530,7 @@ ngx_http_limit_traffic_rate_filter_create_loc_conf(ngx_conf_t *cf)
         return NGX_CONF_ERROR;
     }
     conf->limit_traffic_rate = NGX_CONF_UNSET_SIZE;
+    conf->shm_zone = NGX_CONF_UNSET_PTR;
     return conf;
 }
 
@@ -539,6 +540,12 @@ ngx_http_limit_traffic_rate_filter_merge_loc_conf(ngx_conf_t *cf, void *parent, 
     ngx_http_limit_traffic_rate_filter_conf_t *prev = parent;
     ngx_http_limit_traffic_rate_filter_conf_t *conf = child;
 
+    /*
+     * shm_zone and limit_traffic_rate are always set together by the
+     * limit_traffic_rate directive, so inherit them together from the
+     * enclosing http{} or server{} level.
+     */
+    ngx_conf_merge_ptr_value(conf->shm_zone, prev->shm_zone, NULL);
     ngx_conf_merge_size_value(conf->limit_traffic_rate, prev->limit_traffic_rate, 0);
 
     return NGX_CONF_OK;
@@ -772,7 +779,7 @@ ngx_http_limit_traffic_rate(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_int_t   n;
     ngx_str_t  *value;
 
-    if (lircf->shm_zone) {
+    if (lircf->shm_zone != NGX_CONF_UNSET_PTR) {
         return "is duplicate";
     }
 
@@ -788,7 +795,7 @@ ngx_http_limit_traffic_rate(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     
     if (n == NGX_ERROR) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "invalid size of limit_traffic_rate \"%V\"", &value[3]);
+                           "invalid size of limit_traffic_rate \"%V\"", &value[2]);
         return NGX_CONF_ERROR;
     }
 
