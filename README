@@ -28,6 +28,12 @@ syntax is same to limit_zone.
         }
     }
 
+limit_traffic_rate can be used in http, server and location context. A
+setting at an outer level is inherited by inner levels that do not set it
+themselves; a location-level setting overrides the server/http one.
+
+Tested with nginx 1.28.0.
+
 Changelogs
   v0.2 
     *   modify algorithm, rate = (limit - last_rate)/conn + last_rate
