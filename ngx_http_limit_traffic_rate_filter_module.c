@@ -165,6 +165,7 @@ ngx_http_limit_traffic_rate_filter_handle_zone(ngx_http_request_t *r,
     ngx_http_limit_traffic_rate_filter_ctx_t      *ctx;
     ngx_http_limit_traffic_rate_filter_node_t     *lir;
     ngx_http_limit_traffic_rate_filter_cleanup_t  *lircln;
+    ngx_http_limit_traffic_rate_filter_request_queue_t  *req;
 
     ctx = limit->shm_zone->data;
 
@@ -222,14 +223,14 @@ ngx_http_limit_traffic_rate_filter_handle_zone(ngx_http_request_t *r,
             rc = ngx_memn2cmp(vv->data, lir->data, len, (size_t) lir->len);
 
             if (rc == 0) {
-                lir->conn++;
-                ngx_http_limit_traffic_rate_filter_request_queue_t  *req;
                 req = ngx_slab_alloc_locked(shpool, sizeof(ngx_http_limit_traffic_rate_filter_request_queue_t));
-                if (node == NULL) {
+                if (req == NULL) {
                     ngx_shmtx_unlock(&shpool->mutex);
                     return NGX_HTTP_SERVICE_UNAVAILABLE;
                 }
+                lir->conn++;
                 req->r = r;
+                req->sent = 0;
                 ngx_queue_insert_tail(&(lir->rq_top), &req->rq);
                 goto done;
             }
@@ -259,13 +260,15 @@ ngx_http_limit_traffic_rate_filter_handle_zone(ngx_http_request_t *r,
     lir->start_sec = r->start_sec;
     
     ngx_queue_init(&(lir->rq_top));
-    ngx_http_limit_traffic_rate_filter_request_queue_t  *req;
     req = ngx_slab_alloc_locked(shpool, sizeof(ngx_http_limit_traffic_rate_filter_request_queue_t));
-    if (node == NULL) {
+    if (req == NULL) {
+        /* node is not in the rbtree yet, just give it back */
+        ngx_slab_free_locked(shpool, node);
         ngx_shmtx_unlock(&shpool->mutex);
         return NGX_HTTP_SERVICE_UNAVAILABLE;
     }
     req->r = r;
+    req->sent = 0;
     ngx_queue_insert_tail(&(lir->rq_top), &req->rq);
     
     ngx_memcpy(lir->data, vv->data, len);
