@@ -333,6 +333,7 @@ ngx_http_limit_traffic_rate_filter_handler(ngx_http_request_t *r)
                     return NGX_HTTP_SERVICE_UNAVAILABLE;
                 }
                 req->r = r;
+                req->sent = 0;
                 ngx_queue_insert_tail(&(lir->rq_top), &req->rq);
                 goto done;
             }
@@ -370,6 +371,7 @@ ngx_http_limit_traffic_rate_filter_handler(ngx_http_request_t *r)
         return NGX_HTTP_SERVICE_UNAVAILABLE;
     }
     req->r = r;
+    req->sent = 0;
     ngx_queue_insert_tail(&(lir->rq_top), &req->rq);
     
     ngx_memcpy(lir->data, vv->data, len);
