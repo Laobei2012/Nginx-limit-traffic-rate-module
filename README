@@ -28,6 +28,10 @@ syntax is same to limit_zone.
         }
     }
 
+limit_traffic_rate can be used in http, server and location context. A
+setting at an outer level is inherited by inner levels that do not set it
+themselves; a location-level setting overrides the server/http one.
+
 If the core limit_rate directive, the $limit_rate variable or the
 X-Accel-Limit-Rate header sets a lower rate for a request, the lower rate
 is used.
@@ -56,6 +60,8 @@ How the total rate is enforced:
     So responses smaller than limit_rate_after are never counted toward
     the total.
 
+Tested with nginx 1.28.0.
+
 Examples
 =====
 
@@ -65,8 +71,8 @@ It is a total, not a per-connection limit: with "limit_traffic_rate rate 4m"
 one connection may get 4MB/s, while 8 connections from the same client get
 about 512KB/s each.
 
-Note: set limit_traffic_rate inside location{}. Older versions of this
-module ignore it at http{}/server{} level.
+Note: older versions of this module ignore limit_traffic_rate at
+http{}/server{} level; with those, set it inside location{}.
 
 1. Limit each client IP to at most 8 connections and 4MB/s in total, e.g.
    for multi-thread download managers. limit_conn is the standard nginx
