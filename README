@@ -32,6 +32,30 @@ limit_traffic_rate can be used in http, server and location context. A
 setting at an outer level is inherited by inner levels that do not set it
 themselves; a location-level setting overrides the server/http one.
 
+Several limit_traffic_rate directives using different zones may be given in
+the same block. A request is then accounted in every zone and the lowest of
+the computed rates is applied. For example, to limit each client IP to 100k
+and the whole virtual server to 10m at the same time:
+
+    http {
+        limit_traffic_rate_zone   perip  $binary_remote_addr 32m;
+        limit_traffic_rate_zone   global $server_name 1m;
+
+        server {
+            server_name  example.com;
+
+            location /download/ {
+                limit_traffic_rate  perip  100k;
+                limit_traffic_rate  global 10m;
+            }
+        }
+    }
+
+Requests for which the zone variable is empty are not limited by that zone
+(in the example above server_name must be set). Using the same zone twice in
+one block is an error. The directives are inherited from the previous level
+only if there are no limit_traffic_rate directives on the current level.
+
 Tested with nginx 1.28.0.
 
 Examples

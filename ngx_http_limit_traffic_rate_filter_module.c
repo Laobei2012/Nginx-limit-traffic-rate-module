@@ -57,7 +57,21 @@ typedef struct {
 typedef struct {
     size_t  limit_traffic_rate;
     ngx_shm_zone_t     *shm_zone;
+} ngx_http_limit_traffic_rate_filter_limit_t;
+
+typedef struct {
+    ngx_array_t         limits;
 } ngx_http_limit_traffic_rate_filter_conf_t;
+
+static ngx_int_t
+ngx_http_limit_traffic_rate_filter_handle_zone(ngx_http_request_t *r,
+    ngx_http_limit_traffic_rate_filter_limit_t *limit);
+static size_t
+ngx_http_limit_traffic_rate_body_filter_zone(ngx_http_request_t *r,
+    ngx_http_limit_traffic_rate_filter_limit_t *limit);
+static void
+ngx_http_limit_traffic_rate_filter_log_zone(ngx_http_request_t *r,
+    ngx_http_limit_traffic_rate_filter_limit_t *limit);
 
 
 static ngx_command_t  ngx_http_limit_traffic_rate_filter_commands[] = {
@@ -117,6 +131,30 @@ static ngx_http_output_body_filter_pt    ngx_http_next_body_filter;
 static ngx_int_t
 ngx_http_limit_traffic_rate_filter_handler(ngx_http_request_t *r)
 {
+    ngx_int_t                       rc;
+    ngx_uint_t                      i;
+    ngx_http_limit_traffic_rate_filter_conf_t     *lircf;
+    ngx_http_limit_traffic_rate_filter_limit_t    *limits;
+
+    lircf = ngx_http_get_module_loc_conf(r, ngx_http_limit_traffic_rate_filter_module);
+    limits = lircf->limits.elts;
+
+    for (i = 0; i < lircf->limits.nelts; i++) {
+        rc = ngx_http_limit_traffic_rate_filter_handle_zone(r, &limits[i]);
+
+        if (rc != NGX_DECLINED) {
+            return rc;
+        }
+    }
+
+    return NGX_DECLINED;
+}
+
+
+static ngx_int_t
+ngx_http_limit_traffic_rate_filter_handle_zone(ngx_http_request_t *r,
+    ngx_http_limit_traffic_rate_filter_limit_t *limit)
+{
     size_t                          len, n;
     uint32_t                        hash;
     ngx_int_t                       rc;
@@ -126,16 +164,9 @@ ngx_http_limit_traffic_rate_filter_handler(ngx_http_request_t *r)
     ngx_http_variable_value_t      *vv;
     ngx_http_limit_traffic_rate_filter_ctx_t      *ctx;
     ngx_http_limit_traffic_rate_filter_node_t     *lir;
-    ngx_http_limit_traffic_rate_filter_conf_t     *lircf;
     ngx_http_limit_traffic_rate_filter_cleanup_t  *lircln;
 
-    lircf = ngx_http_get_module_loc_conf(r, ngx_http_limit_traffic_rate_filter_module);
-
-    if (lircf->shm_zone == NULL) {
-        return NGX_DECLINED;
-    }
-
-    ctx = lircf->shm_zone->data;
+    ctx = limit->shm_zone->data;
 
     vv = ngx_http_get_indexed_variable(r, ctx->index);
 
@@ -164,7 +195,7 @@ ngx_http_limit_traffic_rate_filter_handler(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    shpool = (ngx_slab_pool_t *) lircf->shm_zone->shm.addr;
+    shpool = (ngx_slab_pool_t *) limit->shm_zone->shm.addr;
 
     ngx_shmtx_lock(&shpool->mutex);
 
@@ -251,7 +282,7 @@ done:
     cln->handler = ngx_http_limit_traffic_rate_filter_cleanup;
     lircln = cln->data;
 
-    lircln->shm_zone = lircf->shm_zone;
+    lircln->shm_zone = limit->shm_zone;
     lircln->node = node;
 
     return NGX_DECLINED;
@@ -261,7 +292,41 @@ done:
 static ngx_int_t
     ngx_http_limit_traffic_rate_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
-    size_t                                   len;
+    size_t                          rate, limit_rate;
+    ngx_uint_t                      i;
+    ngx_http_limit_traffic_rate_filter_conf_t     *lircf;
+    ngx_http_limit_traffic_rate_filter_limit_t    *limits;
+
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "limit traffic rate filter");
+
+    lircf = ngx_http_get_module_loc_conf(r, ngx_http_limit_traffic_rate_filter_module);
+    limits = lircf->limits.elts;
+
+    limit_rate = 0;
+
+    for (i = 0; i < lircf->limits.nelts; i++) {
+        rate = ngx_http_limit_traffic_rate_body_filter_zone(r, &limits[i]);
+
+        if (rate != 0 && (limit_rate == 0 || rate < limit_rate)) {
+            limit_rate = rate;
+        }
+    }
+
+    if (limit_rate != 0) {
+        r->limit_rate = limit_rate;
+    }
+
+    return ngx_http_next_body_filter(r, in);
+}
+
+
+/* returns the rate computed for the zone, or 0 if the zone does not apply */
+
+static size_t
+ngx_http_limit_traffic_rate_body_filter_zone(ngx_http_request_t *r,
+    ngx_http_limit_traffic_rate_filter_limit_t *limit)
+{
+    size_t                                   len, rate;
     time_t                                   sec;
     uint32_t                                hash;
     ngx_int_t                               rc, num;
@@ -270,29 +335,22 @@ static ngx_int_t
     ngx_http_variable_value_t      *vv;
     ngx_http_limit_traffic_rate_filter_ctx_t      *ctx;
     ngx_http_limit_traffic_rate_filter_node_t     *lir;
-    ngx_http_limit_traffic_rate_filter_conf_t     *lircf;
     off_t sent_sum = 0;
-    
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "limit traffic rate filter");
-    
-    lircf = ngx_http_get_module_loc_conf(r, ngx_http_limit_traffic_rate_filter_module);
 
-    if (lircf->shm_zone == NULL) {
-        return ngx_http_next_body_filter(r, in);
-    }
+    rate = 0;
 
-    ctx = lircf->shm_zone->data;
+    ctx = limit->shm_zone->data;
 
     vv = ngx_http_get_indexed_variable(r, ctx->index);
 
     if (vv == NULL || vv->not_found) {
-        return ngx_http_next_body_filter(r, in);
+        return 0;
     }
 
     len = vv->len;
 
     if (len == 0) {
-        return ngx_http_next_body_filter(r, in);
+        return 0;
     }
 
     if (len > 1024) {
@@ -300,12 +358,12 @@ static ngx_int_t
                       "the value of the \"%V\" variable "
                       "is more than 1024 bytes: \"%v\"",
                       &ctx->var, vv);
-        return ngx_http_next_body_filter(r, in);
+        return 0;
     }
 
     hash = ngx_crc32_short(vv->data, len);
 
-    shpool = (ngx_slab_pool_t *) lircf->shm_zone->shm.addr;
+    shpool = (ngx_slab_pool_t *) limit->shm_zone->shm.addr;
 
     ngx_shmtx_lock(&shpool->mutex);
 
@@ -349,17 +407,17 @@ static ngx_int_t
 
                 sec = ngx_time() - lir->start_sec + 1;
                 sec = sec > 0 ? sec : 1;
-                num =lircf->limit_traffic_rate - sent_sum / sec;
+                num =limit->limit_traffic_rate - sent_sum / sec;
                 num =num / lir->conn + r->connection->sent / sec;
 
                 num = num > 0 ? num : 1024;
-                num = ((size_t)num >lircf->limit_traffic_rate) ? (ngx_int_t)lircf->limit_traffic_rate : num;
+                num = ((size_t)num >limit->limit_traffic_rate) ? (ngx_int_t)limit->limit_traffic_rate : num;
 
-                r->limit_rate = num;
+                rate = num;
                 
                 ngx_log_debug5(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                     "limit traffic d:%z n:%O c:%d r:%z:::%z", lircf->limit_traffic_rate, 
-                            sent_sum, lir->conn, lir->start_sec,r->limit_rate);
+                     "limit traffic d:%z n:%O c:%d r:%z:::%z", limit->limit_traffic_rate, 
+                            sent_sum, lir->conn, lir->start_sec, rate);
                 
                 goto done;
             }
@@ -376,15 +434,37 @@ static ngx_int_t
 done:
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                   "limit traffic rate: %08XD %d", node->key, r->limit_rate);
+                   "limit traffic rate: %08XD %z", node->key, rate);
 
     ngx_shmtx_unlock(&shpool->mutex);
 
-    return ngx_http_next_body_filter(r, in);
+    return rate;
 }
 
 static ngx_int_t
 ngx_http_limit_traffic_rate_filter_log_handler(ngx_http_request_t *r)
+{
+    ngx_uint_t                      i;
+    ngx_http_limit_traffic_rate_filter_conf_t     *lircf;
+    ngx_http_limit_traffic_rate_filter_limit_t    *limits;
+
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, 
+                            "limit traffic rate log phase handler");
+    
+    lircf = ngx_http_get_module_loc_conf(r, ngx_http_limit_traffic_rate_filter_module);
+    limits = lircf->limits.elts;
+
+    for (i = 0; i < lircf->limits.nelts; i++) {
+        ngx_http_limit_traffic_rate_filter_log_zone(r, &limits[i]);
+    }
+
+    return NGX_DECLINED;
+}
+
+
+static void
+ngx_http_limit_traffic_rate_filter_log_zone(ngx_http_request_t *r,
+    ngx_http_limit_traffic_rate_filter_limit_t *limit)
 {
     size_t                          len;
     uint32_t                        hash;
@@ -394,29 +474,19 @@ ngx_http_limit_traffic_rate_filter_log_handler(ngx_http_request_t *r)
     ngx_http_variable_value_t      *vv;
     ngx_http_limit_traffic_rate_filter_ctx_t      *ctx;
     ngx_http_limit_traffic_rate_filter_node_t     *lir;
-    ngx_http_limit_traffic_rate_filter_conf_t     *lircf;
 
-    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, 
-                            "limit traffic rate log phase handler");
-    
-    lircf = ngx_http_get_module_loc_conf(r, ngx_http_limit_traffic_rate_filter_module);
-
-    if (lircf->shm_zone == NULL) {
-        return NGX_DECLINED;
-    }
-
-    ctx = lircf->shm_zone->data;
+    ctx = limit->shm_zone->data;
 
     vv = ngx_http_get_indexed_variable(r, ctx->index);
 
     if (vv == NULL || vv->not_found) {
-        return NGX_DECLINED;
+        return;
     }
 
     len = vv->len;
 
     if (len == 0) {
-        return NGX_DECLINED;
+        return;
     }
 
     if (len > 1024) {
@@ -424,12 +494,12 @@ ngx_http_limit_traffic_rate_filter_log_handler(ngx_http_request_t *r)
                       "the value of the \"%V\" variable "
                       "is more than 1024 bytes: \"%v\"",
                       &ctx->var, vv);
-        return NGX_DECLINED;
+        return;
     }
 
     hash = ngx_crc32_short(vv->data, len);
 
-    shpool = (ngx_slab_pool_t *) lircf->shm_zone->shm.addr;
+    shpool = (ngx_slab_pool_t *) limit->shm_zone->shm.addr;
 
     ngx_shmtx_lock(&shpool->mutex);
 
@@ -488,8 +558,6 @@ ngx_http_limit_traffic_rate_filter_log_handler(ngx_http_request_t *r)
 done:
 
     ngx_shmtx_unlock(&shpool->mutex);
-
-    return NGX_DECLINED;
 }
 
 static ngx_int_t
@@ -529,8 +597,13 @@ ngx_http_limit_traffic_rate_filter_create_loc_conf(ngx_conf_t *cf)
     if (conf == NULL) {
         return NGX_CONF_ERROR;
     }
-    conf->limit_traffic_rate = NGX_CONF_UNSET_SIZE;
-    conf->shm_zone = NGX_CONF_UNSET_PTR;
+
+    /*
+     * set by ngx_pcalloc():
+     *
+     *     conf->limits.elts = NULL;
+     */
+
     return conf;
 }
 
@@ -540,13 +613,9 @@ ngx_http_limit_traffic_rate_filter_merge_loc_conf(ngx_conf_t *cf, void *parent, 
     ngx_http_limit_traffic_rate_filter_conf_t *prev = parent;
     ngx_http_limit_traffic_rate_filter_conf_t *conf = child;
 
-    /*
-     * shm_zone and limit_traffic_rate are always set together by the
-     * limit_traffic_rate directive, so inherit them together from the
-     * enclosing http{} or server{} level.
-     */
-    ngx_conf_merge_ptr_value(conf->shm_zone, prev->shm_zone, NULL);
-    ngx_conf_merge_size_value(conf->limit_traffic_rate, prev->limit_traffic_rate, 0);
+    if (conf->limits.elts == NULL) {
+        conf->limits = prev->limits;
+    }
 
     return NGX_CONF_OK;
 }
@@ -776,19 +845,35 @@ ngx_http_limit_traffic_rate(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_limit_traffic_rate_filter_conf_t  *lircf = conf;
 
-    ngx_int_t   n;
-    ngx_str_t  *value;
-
-    if (lircf->shm_zone != NGX_CONF_UNSET_PTR) {
-        return "is duplicate";
-    }
+    ngx_int_t        n;
+    ngx_str_t       *value;
+    ngx_uint_t       i;
+    ngx_shm_zone_t  *shm_zone;
+    ngx_http_limit_traffic_rate_filter_limit_t  *limit, *limits;
 
     value = cf->args->elts;
 
-    lircf->shm_zone = ngx_shared_memory_add(cf, &value[1], 0,
-                                           &ngx_http_limit_traffic_rate_filter_module);
-    if (lircf->shm_zone == NULL) {
+    shm_zone = ngx_shared_memory_add(cf, &value[1], 0,
+                                     &ngx_http_limit_traffic_rate_filter_module);
+    if (shm_zone == NULL) {
         return NGX_CONF_ERROR;
+    }
+
+    if (lircf->limits.elts == NULL) {
+        if (ngx_array_init(&lircf->limits, cf->pool, 1,
+                           sizeof(ngx_http_limit_traffic_rate_filter_limit_t))
+            != NGX_OK)
+        {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    limits = lircf->limits.elts;
+
+    for (i = 0; i < lircf->limits.nelts; i++) {
+        if (shm_zone == limits[i].shm_zone) {
+            return "is duplicate";
+        }
     }
 
     n = ngx_parse_size(&value[2]);
@@ -805,7 +890,13 @@ ngx_http_limit_traffic_rate(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
-    lircf->limit_traffic_rate= n;
+    limit = ngx_array_push(&lircf->limits);
+    if (limit == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    limit->shm_zone = shm_zone;
+    limit->limit_traffic_rate = n;
 
     return NGX_CONF_OK;
 }
