@@ -34,6 +34,52 @@ themselves; a location-level setting overrides the server/http one.
 
 Tested with nginx 1.28.0.
 
+Examples
+=====
+
+The rate given to limit_traffic_rate is shared by all connections whose
+zone key ($binary_remote_addr, $request_uri, $host, ...) has the same value.
+It is a total, not a per-connection limit: with "limit_traffic_rate rate 4m"
+one connection may get 4MB/s, while 8 connections from the same client get
+about 512KB/s each.
+
+Note: older versions of this module ignore limit_traffic_rate at
+http{}/server{} level; with those, set it inside location{}.
+
+1. Limit each client IP to at most 8 connections and 4MB/s in total, e.g.
+   for multi-thread download managers. limit_conn is the standard nginx
+   module; the 9th connection is rejected with 503.
+
+    http {
+        limit_conn_zone           $binary_remote_addr zone=addr:10m;
+        limit_traffic_rate_zone   rate $binary_remote_addr 32m;
+
+        server {
+            location /download/ {
+                limit_conn          addr 8;
+                limit_traffic_rate  rate 4m;
+            }
+        }
+    }
+
+2. Limit the total download rate of each URI (all clients together), or of
+   each virtual host. $uri is used rather than $request_uri, which includes
+   the query string, so "?x" can not be added to get a new limit.
+
+    http {
+        limit_traffic_rate_zone   per_uri  $uri 32m;
+        limit_traffic_rate_zone   per_host $host 32m;
+
+        server {
+            location /video/ {
+                limit_traffic_rate  per_uri 1m;
+            }
+            location /files/ {
+                limit_traffic_rate  per_host 10m;
+            }
+        }
+    }
+
 Changelogs
   v0.2 
     *   modify algorithm, rate = (limit - last_rate)/conn + last_rate
