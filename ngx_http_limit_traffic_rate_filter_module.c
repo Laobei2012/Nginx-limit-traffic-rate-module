@@ -880,7 +880,7 @@ ngx_http_limit_traffic_rate(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     
     if (n == NGX_ERROR) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "invalid size of limit_traffic_rate \"%V\"", &value[3]);
+                           "invalid size of limit_traffic_rate \"%V\"", &value[2]);
         return NGX_CONF_ERROR;
     }
 
