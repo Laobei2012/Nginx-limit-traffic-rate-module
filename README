@@ -5,6 +5,14 @@ To install, compile nginx with this ./configure option:
 
     --add-module=path/to/this/directory
 
+To build it as a dynamic module instead (nginx 1.9.11 or later), use:
+
+    --add-dynamic-module=path/to/this/directory
+
+and load it at the top level of nginx.conf (outside the http block):
+
+    load_module modules/ngx_http_limit_traffic_rate_filter_module.so;
+
 Nginx directive limit_rate could limit connection's speed, and limit_conn 
 could limit connection number by given variable. If the client is a browser,
  it only open one connection to the server. The speed will be limited to 
