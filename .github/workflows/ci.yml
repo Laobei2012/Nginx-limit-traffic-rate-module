@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: nginx ${{ matrix.nginx }} (${{ matrix.linkage }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        nginx:
+          - 1.16.1   # pre-1.17 code paths
+          - 1.28.3   # legacy stable
+          - 1.30.6   # stable
+          - 1.31.8   # mainline
+        # --add-module vs --add-dynamic-module (+ load_module in the tests);
+        # all versions above are >= 1.9.11, which dynamic modules need.
+        linkage: [static, dynamic]
+
+    steps:
+      - name: Check out the module
+        uses: actions/checkout@v4.2.2
+
+      - name: Install build dependencies
+        # nginx 1.16.1 only knows PCRE1 (libpcre3-dev); newer nginx versions
+        # prefer PCRE2 when it is installed.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libpcre3-dev libpcre2-dev zlib1g-dev cpanminus
+
+      - name: Cache nginx source tarball
+        uses: actions/cache@v4.2.0
+        with:
+          path: ~/nginx-dl
+          key: nginx-src-${{ matrix.nginx }}
+
+      - name: Download nginx ${{ matrix.nginx }}
+        run: |
+          mkdir -p ~/nginx-dl
+          tarball=~/nginx-dl/nginx-${{ matrix.nginx }}.tar.gz
+          if [ ! -s "$tarball" ]; then
+            curl -fsSL --retry 3 -o "$tarball" \
+              "https://nginx.org/download/nginx-${{ matrix.nginx }}.tar.gz"
+          fi
+          mkdir -p "$RUNNER_TEMP/nginx-src"
+          tar -xzf "$tarball" -C "$RUNNER_TEMP/nginx-src" --strip-components=1
+
+      - name: Build nginx with the module (${{ matrix.linkage }}, -Werror)
+        # t/build-nginx.sh runs ./configure --with-cc-opt=-Werror --with-pcre
+        # and --add-module or --add-dynamic-module (the rewrite module is on
+        # by default with PCRE).
+        run: |
+          t/build-nginx.sh "$RUNNER_TEMP/nginx-src" "$RUNNER_TEMP/nginx-install" \
+            ${{ matrix.linkage }}
+          "$RUNNER_TEMP/nginx-install/sbin/nginx" -V
+
+      - name: Install Test::Nginx
+        # pinned: the tests are written against this version's behaviour
+        run: |
+          for attempt in 1 2 3; do
+            sudo cpanm --notest --quiet Test::Nginx@0.32 && exit 0
+            echo "cpanm failed (attempt $attempt), retrying"
+            sleep 10
+          done
+          exit 1
+
+      - name: Run the test suite
+        env:
+          NGINX_PREFIX: ${{ runner.temp }}/nginx-install
+          NGINX_VERSION: ${{ matrix.nginx }}
+          LINKAGE: ${{ matrix.linkage }}
+        run: |
+          export TEST_NGINX_BINARY="$NGINX_PREFIX/sbin/nginx"
+          if [ "$LINKAGE" = dynamic ]; then
+            export LTR_DYNAMIC_MODULE="$NGINX_PREFIX/modules/ngx_http_limit_traffic_rate_filter_module.so"
+          fi
+          if [ "$NGINX_VERSION" = 1.16.1 ]; then
+            # nginx < 1.19.5 has no "-e" option, which Test::Nginx always passes
+            export NGX_REAL_BINARY="$TEST_NGINX_BINARY"
+            export TEST_NGINX_BINARY="$PWD/t/nginx-no-e.sh"
+          fi
+          prove -r t/

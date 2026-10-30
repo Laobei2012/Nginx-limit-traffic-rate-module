@@ -141,6 +141,12 @@ http{}/server{} level; with those, set it inside location{}.
         }
     }
 
+Tests
+=====
+
+The test suite (Test::Nginx) is in t/; see t/README for how to run it. CI runs
+it against several nginx versions.
+
 Changelogs
   v0.2 
     *   modify algorithm, rate = (limit - last_rate)/conn + last_rate

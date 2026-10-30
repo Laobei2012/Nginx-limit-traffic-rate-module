@@ -1,0 +1,73 @@
+Tests for ngx_http_limit_traffic_rate_filter_module
+====================================================
+
+The tests use Test::Nginx (Test::Nginx::Socket) and live in t/*.t:
+
+  t/config.t    configuration parsing: valid config and every error message
+  t/inherit.t   http{} / server{} / location{} / if{} inheritance
+  t/rate.t      rate enforcement (single, shared key, separate keys, unlimited)
+  t/shortresp.t short responses, limit_rate/limit_rate_after, burst cap,
+                crash regressions, internal redirects
+  t/multi.t     several zones in one block (lowest rate wins, replace, empty key)
+  t/zonefull.t  full zone: 503 instead of a crash, then recovery
+  t/example.t   the README example (limit_conn 8 + limit_traffic_rate)
+  t/dynamic.t   dynamic module: .so loads, directives unknown without it
+
+Shared helpers are in t/lib/LimitRate.pm (an optional "--- timing" section
+that runs parallel downloads and measures elapsed time).  t/build-nginx.sh
+builds nginx with the module.
+
+Running locally
+---------------
+
+1. Install Test::Nginx (needs perl and cpanminus):
+
+       sudo cpanm --notest Test::Nginx@0.32
+
+2. Build nginx with the module, statically and with -Werror, for example:
+
+       curl -fsSLO https://nginx.org/download/nginx-1.28.3.tar.gz
+       mkdir /tmp/nginx-src && tar -xzf nginx-1.28.3.tar.gz -C /tmp/nginx-src --strip-components=1
+       t/build-nginx.sh /tmp/nginx-src /tmp/nginx-install
+
+   (build dependencies: a C compiler, make, PCRE and zlib development
+   packages; nginx 1.16.1 needs PCRE1, i.e. libpcre3-dev on Debian/Ubuntu.)
+
+3. Run the suite from the repository root:
+
+       TEST_NGINX_BINARY=/tmp/nginx-install/sbin/nginx prove -r t/
+
+   nginx 1.16.1 (and anything older than 1.19.5) has no "-e" option, which
+   Test::Nginx always passes; use the wrapper:
+
+       NGX_REAL_BINARY=/tmp/nginx-install/sbin/nginx \
+       TEST_NGINX_BINARY=$PWD/t/nginx-no-e.sh prove -r t/
+
+   Dynamic module (nginx >= 1.9.11): build with
+   "t/build-nginx.sh <src> <prefix> dynamic" and add
+   LTR_DYNAMIC_MODULE=<prefix>/modules/ngx_http_limit_traffic_rate_filter_module.so
+   to the environment; "load_module" is then added to every test config
+   and t/dynamic.t is enabled (it is skipped otherwise).
+
+   Run a single file with e.g.  prove -v t/rate.t  (use the same variable).
+   The tests start nginx on port 1984 (override with TEST_NGINX_PORT) and
+   write to t/servroot/, which is removed by the next run.
+
+The whole suite takes about 3 minutes: the rate tests download files
+at a few KB/s on purpose.  t/zonefull.t starts about 1200 client processes and sets worker_connections
+to 4096 (the open file limit must allow that).
+Timing checks use a tight lower bound (proves the
+limit is applied) and a loose upper bound; "# timing: ..." lines on stderr
+show the measured times, which helps when a run on a slow machine fails.
+
+Adding tests
+------------
+
+Put new cases in an existing file or add t/<topic>.t.  Config-only tests
+use --- must_die and --- error_log.  For timing tests copy a block from
+t/rate.t: the normal request only checks that nginx is up, the "--- timing
+eval" section lists the parallel clients and a check callback (fully
+qualify Test::More functions there, e.g. Test::More::is).
+
+CI (.github/workflows/ci.yml) builds and runs this suite, static and
+dynamic, against pinned nginx versions.
